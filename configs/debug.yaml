@@ -1,0 +1,14 @@
+vocab_size: 512
+max_seq_len: 64
+d_model: 64
+n_heads: 4
+n_kv_heads: 2
+d_ff: 192
+prelude_layers: 1
+recurrent_layers: 1
+coda_layers: 1
+max_depth: 4
+reasoning_slots: 8
+dropout: 0.0
+use_moe: false
+mode: fixed

@@ -1,0 +1,6 @@
+.codex
+PLAN.md
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
