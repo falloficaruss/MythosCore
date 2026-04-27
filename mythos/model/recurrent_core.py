@@ -9,6 +9,7 @@ from torch import nn
 
 from mythos.model.attention import CausalSelfAttention
 from mythos.model.config import MythosConfig
+from mythos.model.controller import ComputeController
 from mythos.model.mlp import SwiGLU
 from mythos.model.moe import TopKMoE
 from mythos.model.multi_latent_attention import MultiLatentAttention
@@ -23,6 +24,8 @@ class RecurrentDiagnostics:
     update_gates: list[dict[str, float]]
     moe_aux_losses: list[torch.Tensor]
     moe_stats: list[dict[str, torch.Tensor]]
+    halting_probabilities: list[float]
+    final_depth: int = 0
 
 
 class RecurrentLayer(nn.Module):
@@ -72,6 +75,7 @@ class RecurrentCore(nn.Module):
         super().__init__()
         self.config = config
         self.layers = nn.ModuleList(RecurrentLayer(config) for _ in range(config.recurrent_layers))
+        self.controller = ComputeController(config) if config.mode == "adaptive" else None
 
     def forward(
         self,
@@ -81,10 +85,21 @@ class RecurrentCore(nn.Module):
         *,
         depth: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, RecurrentDiagnostics]:
-        steps = depth or self.config.max_depth
-        diagnostics = RecurrentDiagnostics([], [], [], [], [])
+        diagnostics = RecurrentDiagnostics([], [], [], [], [], [], 0)
+        remaining_probability = 1.0
+        acc_halting_probability = 0.0
+
+        if self.config.mode == "fixed":
+            steps = depth or self.config.max_depth
+        else:
+            steps = self.config.max_depth + self.config.act_max_halting_steps
+
         for i in range(steps):
-            depth_index = min(i, self.config.max_depth - 1)
+            if i < self.config.max_depth:
+                depth_index = i
+            else:
+                depth_index = self.config.max_depth - 1
+
             for layer in self.layers:
                 semantic, reasoning, aux_loss, moe_stats = layer(
                     semantic,
@@ -98,4 +113,15 @@ class RecurrentCore(nn.Module):
                     diagnostics.moe_stats.append(moe_stats)
             diagnostics.semantic_norms.append(float(semantic.norm(dim=-1).mean().detach().cpu()))
             diagnostics.reasoning_norms.append(float(reasoning.norm(dim=-1).mean().detach().cpu()))
+
+            if self.config.mode == "adaptive" and self.controller is not None:
+                p_h = self.controller(semantic, reasoning).squeeze(-1)
+                p_t = p_h * remaining_probability
+                acc_halting_probability += p_t
+                remaining_probability -= p_t
+                diagnostics.halting_probabilities.append(float(p_h.mean().detach().cpu()))
+
+                if (remaining_probability < self.config.act_epsilon).all() and i >= self.config.max_depth - 1:
+                    break
+        diagnostics.final_depth = i + 1
         return semantic, reasoning, diagnostics

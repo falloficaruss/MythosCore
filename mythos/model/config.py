@@ -30,6 +30,8 @@ class MythosConfig:
     n_experts: int = 4
     top_k: int = 2
     mode: str = "fixed"
+    act_epsilon: float = 0.01
+    act_max_halting_steps: int = 2
 
     def __post_init__(self) -> None:
         if self.d_model % self.n_heads != 0:

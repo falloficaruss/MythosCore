@@ -1,42 +1,48 @@
-"""Run a deterministic MythosCore forward-pass smoke test."""
-
-from __future__ import annotations
-
-import argparse
-from pathlib import Path
-
 import torch
-import yaml
 
 from mythos import MythosConfig, MythosCore
 
 
-def load_config(path: Path) -> MythosConfig:
-    with path.open("r", encoding="utf-8") as handle:
-        return MythosConfig(**yaml.safe_load(handle))
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=Path, default=Path("configs/debug.yaml"))
-    parser.add_argument("--batch", type=int, default=2)
-    parser.add_argument("--seq-len", type=int, default=16)
-    parser.add_argument("--depth", type=int, default=None)
-    args = parser.parse_args()
-
-    torch.manual_seed(7)
-    config = load_config(args.config)
+def test_forward_shapes_fixed_depth():
+    config = MythosConfig(
+        vocab_size=128,
+        max_seq_len=32,
+        d_model=32,
+        n_heads=4,
+        n_kv_heads=2,
+        d_ff=96,
+        prelude_layers=1,
+        recurrent_layers=1,
+        coda_layers=1,
+        max_depth=3,
+        reasoning_slots=5,
+    )
     model = MythosCore(config)
-    input_ids = torch.randint(0, config.vocab_size, (args.batch, args.seq_len))
-    output = model(input_ids, depth=args.depth)
+    input_ids = torch.randint(0, config.vocab_size, (2, 11))
+    output = model(input_ids)
 
-    print(f"logits={tuple(output.logits.shape)}")
-    print(f"reasoning={tuple(output.reasoning_state.shape)}")
-    print(f"semantic_norms={output.diagnostics.semantic_norms}")
-    print(f"reasoning_norms={output.diagnostics.reasoning_norms}")
-    if output.aux_loss is not None:
-        print(f"aux_loss={float(output.aux_loss.detach().cpu()):.6f}")
+    assert output.logits.shape == (2, 11, config.vocab_size)
+    assert output.reasoning_state.shape == (2, config.reasoning_slots, config.d_model)
+    assert len(output.diagnostics.semantic_norms) == config.max_depth
+    assert len(output.diagnostics.reasoning_norms) == config.max_depth
 
 
-if __name__ == "__main__":
-    main()
+def test_forward_uses_requested_depth():
+    config = MythosConfig(
+        vocab_size=128,
+        max_seq_len=32,
+        d_model=32,
+        n_heads=4,
+        n_kv_heads=2,
+        d_ff=96,
+        prelude_layers=1,
+        recurrent_layers=1,
+        coda_layers=1,
+        max_depth=4,
+        reasoning_slots=5,
+    )
+    model = MythosCore(config)
+    output = model(torch.randint(0, config.vocab_size, (1, 7)), depth=2)
+
+    assert len(output.diagnostics.semantic_norms) == 2
+    assert len(output.diagnostics.reasoning_norms) == 2
